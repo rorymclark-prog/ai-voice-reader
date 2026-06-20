@@ -49,6 +49,7 @@ function getAudioContextConstructor(): AudioContextConstructor | undefined {
 export default function QuickListen() {
   const [open, setOpen] = useState(false);
   const [bubble, setBubble] = useState<Bubble | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const bubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [text, setText] = useState('');
@@ -233,11 +234,24 @@ export default function QuickListen() {
       }, 60);
     };
 
+    const onContextMenu = (e: MouseEvent) => {
+      const t = getSelectedText();
+      if (!t || t.length < 3) return;
+      e.preventDefault();
+      setContextMenu({ x: e.clientX, y: e.clientY, text: t });
+    };
+
+    const onClickOutside = () => setContextMenu(null);
+
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('contextmenu', onContextMenu);
+    document.addEventListener('click', onClickOutside);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('contextmenu', onContextMenu);
+      document.removeEventListener('click', onClickOutside);
       if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -376,6 +390,33 @@ export default function QuickListen() {
 
   return (
     <>
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: Math.max(0, Math.min(contextMenu.x, window.innerWidth - 180)),
+            top: Math.max(0, Math.min(contextMenu.y, window.innerHeight - 60)),
+            zIndex: 99999,
+          }}
+          onMouseDown={(e) => e.preventDefault()}
+          className="min-w-[160px] rounded-xl shadow-2xl overflow-hidden border border-gray-800 bg-gray-950 text-white py-1"
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm font-medium hover:bg-indigo-600 transition-colors cursor-pointer"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setContextMenu(null);
+              openWith(contextMenu.text, true);
+            }}
+          >
+            <Headphones className="w-4 h-4 shrink-0" />
+            Read Aloud
+          </button>
+        </div>
+      )}
+
       {/* Floating selection bubble */}
       {bubble && !open && (
         <div
