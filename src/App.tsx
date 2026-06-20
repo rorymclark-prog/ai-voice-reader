@@ -44,7 +44,7 @@ function App() {
             <aside className="rounded-2xl border border-slate-200 bg-white/72 p-4 shadow-xs backdrop-blur">
               <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Scratch Text</p>
               <p className="mt-3 text-sm leading-6 text-slate-700">
-                Highlight any sentence in this panel and press {shortcutLabel} to open quick listen.
+                Highlight any sentence in this panel and press {shortcutLabel} to hear it read aloud.
                 The modal can also read pasted text or documents.
               </p>
             </aside>

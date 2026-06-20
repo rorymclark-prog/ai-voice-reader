@@ -20,6 +20,10 @@ Standalone Gemini-powered voice reader for pasted text, PDFs, images, and plain-
 
 The local dev server runs on `http://localhost:3001/`.
 
+## Shortcut
+
+Highlight text anywhere in the app and press `Option+L` on Mac, or `Alt+L` elsewhere, to read it aloud.
+
 ## Checks
 
 ```bash
