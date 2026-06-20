@@ -194,6 +194,74 @@ export async function synthesizeSpeech(
   return pcmToWav(base64ToBytes(audioBase64));
 }
 
+/** True for "you're out of quota / rate limited" responses from Gemini. */
+export function isQuotaError(e: unknown): boolean {
+  const msg = String((e as { message?: string })?.message || e);
+  return /\b429\b|quota|RESOURCE_EXHAUSTED|rate.?limit|exceeded your current quota/i.test(msg);
+}
+
+/**
+ * Retry a single TTS call on genuinely transient errors (server overload /
+ * network blips). Quota / 429 errors are NOT retried — they won't clear within
+ * a request, so we fail fast and let the caller fall back to the device voice.
+ */
+async function synthesizeWithRetry(
+  text: string,
+  voice: string,
+  attempts = 3
+): Promise<Blob> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await synthesizeSpeech(text, voice);
+    } catch (e) {
+      lastErr = e;
+      if (isQuotaError(e)) throw e; // not transient — bail immediately
+      const msg = String((e as { message?: string })?.message || e);
+      const transient = /\b503\b|overloaded|unavailable|temporarily|timeout|network|fetch failed|ECONN/i.test(msg);
+      if (!transient || attempt === attempts - 1) throw e;
+      // Exponential backoff: 0.8s, 1.6s …
+      await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Synthesize many chunks with bounded concurrency while preserving order.
+ *
+ * Long documents used to render one chunk at a time (≈ chunks × perCallTime).
+ * Running a few in flight at once cuts wall-clock to ≈ ceil(chunks / concurrency)
+ * × perCallTime, so a 12-chunk file is ~3–4× faster. Concurrency is kept modest
+ * and each call retries on rate-limit errors so big jobs stay reliable.
+ *
+ * @param onProgress called as chunks finish (out of order) with (done, total).
+ */
+export async function synthesizeSpeechBatch(
+  chunks: string[],
+  voice: string = DEFAULT_VOICE,
+  opts: { concurrency?: number; onProgress?: (done: number, total: number) => void } = {}
+): Promise<Blob[]> {
+  const total = chunks.length;
+  const concurrency = Math.max(1, Math.min(opts.concurrency ?? 4, total));
+  const results = new Array<Blob>(total);
+  let nextIndex = 0;
+  let done = 0;
+
+  async function worker() {
+    for (;;) {
+      const i = nextIndex++;
+      if (i >= total) return;
+      results[i] = await synthesizeWithRetry(chunks[i], voice);
+      done += 1;
+      opts.onProgress?.(done, total);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
+}
+
 /**
  * Concatenate several WAV blobs (all produced by synthesizeSpeech, so same format)
  * into a single downloadable WAV by stripping the 44-byte header off each and

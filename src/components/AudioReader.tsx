@@ -1,19 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Headphones, FileUp, Type, Play, Pause, Download, Loader2,
-  AlertTriangle, Volume2, Sparkles, RotateCcw, FileText, Gauge,
+  AlertTriangle, Volume2, Sparkles, RotateCcw, FileText, Gauge, Zap, Info,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   VOICE_OPTIONS, DEFAULT_VOICE, isGeminiConfigured, fileToBase64,
-  extractReadableText, synthesizeSpeech, mergeWavBlobs, chunkText,
+  extractReadableText, synthesizeSpeechBatch, mergeWavBlobs, chunkText, isQuotaError,
 } from '../utils/gemini';
 
 type InputMode = 'file' | 'text';
 type Status = 'idle' | 'extracting' | 'synthesizing' | 'ready' | 'error';
+type Engine = 'device' | 'neural';
+type OutputKind = 'gemini' | 'device';
 
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2];
 const VOICE_STORAGE_KEY = 'ai_reader_voice';
+const ENGINE_STORAGE_KEY = 'ai_reader_engine';
+const DEVICE_TTS_AVAILABLE = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
 const PLAIN_TEXT_EXT = /\.(txt|md|markdown|csv|json|log)$/i;
 function isPlainTextFile(file: File): boolean {
@@ -47,13 +51,19 @@ export default function AudioReader({
   const [voice, setVoice] = useState<string>(
     () => localStorage.getItem(VOICE_STORAGE_KEY) || DEFAULT_VOICE
   );
+  const [engine, setEngine] = useState<Engine>(
+    () => (localStorage.getItem(ENGINE_STORAGE_KEY) as Engine) || 'device'
+  );
 
   const [status, setStatus] = useState<Status>('idle');
   const [progressLabel, setProgressLabel] = useState('');
   const [transcript, setTranscript] = useState('');
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [outputKind, setOutputKind] = useState<OutputKind | null>(null);
   const [sourceName, setSourceName] = useState('reading');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const deviceTextRef = useRef('');
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -69,6 +79,79 @@ export default function AudioReader({
     setVoice(v);
     localStorage.setItem(VOICE_STORAGE_KEY, v);
   };
+
+  const setEngineAndSave = (e: Engine) => {
+    setEngine(e);
+    localStorage.setItem(ENGINE_STORAGE_KEY, e);
+  };
+
+  // --- Device voice (browser SpeechSynthesis): free, unlimited, instant ---
+  const pickDeviceVoice = (): SpeechSynthesisVoice | null => {
+    if (!DEVICE_TTS_AVAILABLE) return null;
+    const voices = window.speechSynthesis.getVoices();
+    const en = voices.filter((v) => /^en[-_]/i.test(v.lang));
+    return (
+      en.find((v) => /natural|enhanced|premium|samantha|siri/i.test(v.name)) ||
+      en[0] || voices[0] || null
+    );
+  };
+
+  const stopDevice = () => {
+    if (DEVICE_TTS_AVAILABLE) window.speechSynthesis.cancel();
+    setIsPlaying(false);
+  };
+
+  const speakWithDevice = (text: string, rateArg: number = rate) => {
+    if (!DEVICE_TTS_AVAILABLE) {
+      setError('This browser has no built-in speech voice — try the neural voice instead.');
+      setStatus('error');
+      return;
+    }
+    window.speechSynthesis.cancel();
+    deviceTextRef.current = text;
+    const voiceObj = pickDeviceVoice();
+    // Speak in small sentence groups so very long text doesn't trip the
+    // browser's ~15s single-utterance cutoff.
+    const parts = text.match(/[^.!?\n]+[.!?]*\s*|\n+/g) || [text];
+    const groups: string[] = [];
+    let cur = '';
+    for (const p of parts) {
+      if ((cur + p).length > 220 && cur.trim()) { groups.push(cur); cur = ''; }
+      cur += p;
+    }
+    if (cur.trim()) groups.push(cur);
+
+    const last = groups.length - 1;
+    groups.forEach((g, i) => {
+      const u = new SpeechSynthesisUtterance(g.trim());
+      if (voiceObj) u.voice = voiceObj;
+      u.rate = rateArg;
+      if (i === 0) u.onstart = () => setIsPlaying(true);
+      if (i === last) u.onend = () => setIsPlaying(false);
+      u.onerror = () => setIsPlaying(false);
+      window.speechSynthesis.speak(u);
+    });
+  };
+
+  const toggleDevicePlayback = () => {
+    if (!DEVICE_TTS_AVAILABLE) return;
+    const ss = window.speechSynthesis;
+    if (ss.speaking && !ss.paused) { ss.pause(); setIsPlaying(false); }
+    else if (ss.paused) { ss.resume(); setIsPlaying(true); }
+    else { speakWithDevice(deviceTextRef.current); }
+  };
+
+  // Warm up the device voice list (populated asynchronously) and stop any
+  // speech when the component unmounts.
+  useEffect(() => {
+    if (!DEVICE_TTS_AVAILABLE) return;
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+    return () => {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
 
   // Revoke stale object URLs to avoid memory leaks.
   useEffect(() => {
@@ -117,10 +200,13 @@ export default function AudioReader({
     setProgressLabel('');
     setTranscript('');
     setError('');
+    setNotice('');
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
     audioRef.current?.pause();
+    stopDevice();
+    setOutputKind(null);
     setAudioUrl(null);
   };
 
@@ -129,14 +215,23 @@ export default function AudioReader({
     | { kind: 'doc'; base64: string; mimeType: string };
 
   async function generateFromSource(source: Source, name: string) {
-    if (!configured) {
-      setError('Gemini API key is not configured — audio cannot be generated.');
+    // Reading a PDF/image always needs Gemini to extract its text, regardless
+    // of which voice engine plays it back.
+    if (source.kind === 'doc' && !configured) {
+      setError('Reading a PDF or image needs the Gemini key to extract its text. Add GEMINI_API_KEY, or paste the text directly to use the free device voice.');
+      setStatus('error');
+      return;
+    }
+    if (engine === 'neural' && !configured) {
+      setError('The neural voice needs GEMINI_API_KEY. Switch to the free device voice, or add the key.');
       setStatus('error');
       return;
     }
     try {
       setError('');
+      setNotice('');
       setAudioUrl(null);
+      setOutputKind(null);
       setSourceName(name || 'reading');
 
       let text: string;
@@ -150,26 +245,51 @@ export default function AudioReader({
       if (!text) throw new Error('No readable text found in this file.');
       setTranscript(text);
 
-      const chunks = chunkText(text);
-      setStatus('synthesizing');
-      const blobs: Blob[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        setProgressLabel(
-          chunks.length > 1
-            ? `Generating voice… ${i + 1} / ${chunks.length}`
-            : 'Generating natural voice…'
-        );
-        blobs.push(await synthesizeSpeech(chunks[i], voice));
+      // Free, unlimited, instant — the device's built-in voice.
+      if (engine === 'device') {
+        setOutputKind('device');
+        setStatus('ready');
+        setProgressLabel('');
+        speakWithDevice(text);
+        return;
       }
 
-      const merged = await mergeWavBlobs(blobs);
-      setAudioUrl(URL.createObjectURL(merged));
-      setStatus('ready');
-      setProgressLabel('');
+      // Premium Gemini neural voice (free tier is limited to 10 requests/day).
+      try {
+        const chunks = chunkText(text);
+        setStatus('synthesizing');
+        const blobs = await synthesizeSpeechBatch(chunks, voice, {
+          onProgress: (done, total) =>
+            setProgressLabel(
+              total > 1 ? `Generating voice… ${done} / ${total}` : 'Generating natural voice…'
+            ),
+        });
+        const merged = await mergeWavBlobs(blobs);
+        setAudioUrl(URL.createObjectURL(merged));
+        setOutputKind('gemini');
+        setStatus('ready');
+        setProgressLabel('');
+      } catch (e) {
+        // Out of Gemini quota → keep the user listening with the free voice.
+        if (isQuotaError(e) && DEVICE_TTS_AVAILABLE) {
+          setNotice("Gemini's free daily limit (10 requests/day) is used up. Reading with your device's built-in voice instead — free and unlimited.");
+          setOutputKind('device');
+          setStatus('ready');
+          setProgressLabel('');
+          speakWithDevice(text);
+          return;
+        }
+        throw e;
+      }
     } catch (e: any) {
       console.error('AudioReader error:', e);
-      setError(e?.message || 'Something went wrong while generating audio.');
+      setError(
+        isQuotaError(e)
+          ? "Gemini's free daily limit (10 requests/day) is used up. Switch to the free Device voice above to keep listening."
+          : (e?.message || 'Something went wrong while generating audio.')
+      );
       setStatus('error');
+      setProgressLabel('');
     }
   }
 
@@ -214,6 +334,10 @@ export default function AudioReader({
     const next = PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length];
     setRate(next);
     if (audioRef.current) audioRef.current.playbackRate = next;
+    // Device voice can't change rate mid-utterance — restart at the new speed.
+    if (outputKind === 'device' && DEVICE_TTS_AVAILABLE && window.speechSynthesis.speaking) {
+      speakWithDevice(deviceTextRef.current, next);
+    }
   };
 
   const handleDownload = () => {
@@ -318,42 +442,87 @@ export default function AudioReader({
           />
         )}
 
-        {/* Voice picker */}
+        {/* Voice engine */}
         <div>
           <div className="flex items-center gap-1.5 mb-2.5">
             <Volume2 className="w-3.5 h-3.5 text-gray-500" />
-            <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Choose a Voice</h4>
+            <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Voice engine</h4>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-            {VOICE_OPTIONS.map((v) => (
-              <button
-                key={v.id}
-                type="button"
-                onClick={() => setVoiceAndSave(v.id)}
-                className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${
-                  voice === v.id
-                    ? 'border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-500/20'
-                    : 'border-gray-150 bg-white hover:bg-gray-50 hover:border-gray-200'
-                }`}
-              >
-                <p className="text-xs font-bold text-gray-900">{v.label}</p>
-                <p className="text-[10px] text-gray-450 mt-0.5 leading-snug">{v.description}</p>
-              </button>
-            ))}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setEngineAndSave('device')}
+              className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                engine === 'device'
+                  ? 'border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-500/20'
+                  : 'border-gray-150 bg-white hover:bg-gray-50 hover:border-gray-200'
+              }`}
+            >
+              <p className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-indigo-600" /> Device voice
+              </p>
+              <p className="text-[10px] text-gray-450 mt-0.5 leading-snug">Free · instant · any length</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEngineAndSave('neural')}
+              className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                engine === 'neural'
+                  ? 'border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-500/20'
+                  : 'border-gray-150 bg-white hover:bg-gray-50 hover:border-gray-200'
+              }`}
+            >
+              <p className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600" /> Neural voice
+              </p>
+              <p className="text-[10px] text-gray-450 mt-0.5 leading-snug">Lifelike · Gemini · 10/day free</p>
+            </button>
           </div>
         </div>
+
+        {/* Gemini voice picker (neural engine only) */}
+        {engine === 'neural' && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-2.5">
+              <Volume2 className="w-3.5 h-3.5 text-gray-500" />
+              <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Choose a Voice</h4>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+              {VOICE_OPTIONS.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => setVoiceAndSave(v.id)}
+                  className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                    voice === v.id
+                      ? 'border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-500/20'
+                      : 'border-gray-150 bg-white hover:bg-gray-50 hover:border-gray-200'
+                  }`}
+                >
+                  <p className="text-xs font-bold text-gray-900">{v.label}</p>
+                  <p className="text-[10px] text-gray-450 mt-0.5 leading-snug">{v.description}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Generate button */}
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={busy || !configured}
+          disabled={busy || (engine === 'neural' && !configured)}
           className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer"
         >
           {busy ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
               <span>{progressLabel || 'Working…'}</span>
+            </>
+          ) : engine === 'device' ? (
+            <>
+              <Zap className="w-4 h-4" />
+              <span>Read Aloud (free)</span>
             </>
           ) : (
             <>
@@ -363,6 +532,14 @@ export default function AudioReader({
           )}
         </button>
 
+        {/* Info notice (e.g. quota fallback) */}
+        {notice && (
+          <div className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-150 flex items-start gap-2.5">
+            <Info className="w-4 h-4 text-indigo-600 mt-0.5 shrink-0" />
+            <p className="text-xs text-indigo-800 leading-relaxed">{notice}</p>
+          </div>
+        )}
+
         {/* Error */}
         {status === 'error' && error && (
           <div className="p-3.5 rounded-xl bg-red-50 border border-red-150 flex items-start gap-2.5">
@@ -371,9 +548,46 @@ export default function AudioReader({
           </div>
         )}
 
+        {/* Device-voice player (free, browser SpeechSynthesis) */}
+        {status === 'ready' && outputKind === 'device' && (
+          <div className="rounded-2xl border border-gray-150 bg-gradient-to-br from-gray-50 to-white p-5 shadow-xs">
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={toggleDevicePlayback}
+                className="w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-md shrink-0 cursor-pointer transition-colors"
+              >
+                {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
+              </button>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-gray-800 truncate">{sourceName}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1.5">
+                  <Zap className="w-3 h-3" /> Free device voice {isPlaying ? '· playing…' : '· paused'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={stopDevice}
+                title="Stop"
+                className="px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-gray-50 cursor-pointer shrink-0"
+              >
+                Stop
+              </button>
+              <button
+                type="button"
+                onClick={cycleRate}
+                title="Playback speed"
+                className="px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-gray-50 flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <Gauge className="w-3.5 h-3.5" /> {rate}×
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Player */}
         <AnimatePresence>
-          {status === 'ready' && audioUrl && (
+          {status === 'ready' && outputKind === 'gemini' && audioUrl && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
