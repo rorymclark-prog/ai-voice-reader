@@ -21,7 +21,7 @@ interface Bubble { x: number; y: number; text: string; }
 
 /**
  * Global "Quick Listen" experience:
- *  - Press Alt+L anywhere (with text selected, it's picked up automatically) → popup opens.
+ *  - Press Alt+L anywhere with selected text, and reading starts automatically.
  *  - A floating bubble also appears when you select a chunk of text.
  *  - Inside the popup: edit/confirm text or choose a file, pick a voice, listen instantly.
  */
@@ -47,7 +47,7 @@ export default function QuickListen() {
   const configured = isGeminiConfigured();
 
   // --- open helpers ---
-  const openWith = (initialText: string) => {
+  const openWith = (initialText: string, autoStart = false) => {
     dismissBubble();
     setError('');
     setStatus('idle');
@@ -55,6 +55,9 @@ export default function QuickListen() {
     setFileName('');
     setText(initialText);
     setOpen(true);
+    if (autoStart && initialText.trim()) {
+      void run(async () => initialText);
+    }
   };
 
   const dismissBubble = () => {
@@ -70,7 +73,7 @@ export default function QuickListen() {
       if (e.altKey && (e.code === 'KeyL' || e.key.toLowerCase() === 'l')) {
         e.preventDefault();
         const sel = window.getSelection()?.toString().trim() || '';
-        openWith(sel);
+        openWith(sel, Boolean(sel));
       }
       if (e.key === 'Escape') setOpen(false);
     };
@@ -187,7 +190,7 @@ export default function QuickListen() {
       {bubble && !open && (
         <div
           style={{ position: 'absolute', left: bubble.x, top: bubble.y, transform: 'translateX(-50%)', zIndex: 99998 }}
-          onMouseDown={(e) => { e.preventDefault(); openWith(bubble.text); }}
+          onMouseDown={(e) => { e.preventDefault(); openWith(bubble.text, true); }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-full shadow-2xl cursor-pointer bg-gray-950 text-white text-[11px] font-bold uppercase tracking-wider hover:bg-indigo-600 transition-colors select-none"
         >
           <Headphones className="w-3.5 h-3.5 shrink-0" />
@@ -240,7 +243,7 @@ export default function QuickListen() {
                   <textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    placeholder="Highlight text on the page and press Alt+L — or type/paste here, or choose a file below."
+                    placeholder={`Highlight text on the page and press ${SHORTCUT_LABEL} — or type/paste here, or choose a file below.`}
                     rows={4}
                     className="mt-1.5 w-full p-3 border border-gray-200 rounded-xl text-sm text-gray-800 bg-gray-50/40 focus:bg-white focus:outline-none focus:ring-1 focus:ring-gray-900 focus:border-gray-900 resize-y"
                   />
