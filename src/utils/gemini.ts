@@ -201,14 +201,15 @@ export function isQuotaError(e: unknown): boolean {
 }
 
 /**
- * Retry a single TTS call on genuinely transient errors (server overload /
- * network blips). Quota / 429 errors are NOT retried — they won't clear within
- * a request, so we fail fast and let the caller fall back to the device voice.
+ * Retry a single TTS call on retryable errors. With billing enabled, a 429 is
+ * almost always a short-lived per-minute burst limit, so we back off and retry
+ * (1s, 3s, 6s) rather than giving up. If it still fails after all attempts the
+ * error propagates and the caller can fall back to the free device voice.
  */
 async function synthesizeWithRetry(
   text: string,
   voice: string,
-  attempts = 3
+  attempts = 4
 ): Promise<Blob> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -216,12 +217,12 @@ async function synthesizeWithRetry(
       return await synthesizeSpeech(text, voice);
     } catch (e) {
       lastErr = e;
-      if (isQuotaError(e)) throw e; // not transient — bail immediately
       const msg = String((e as { message?: string })?.message || e);
-      const transient = /\b503\b|overloaded|unavailable|temporarily|timeout|network|fetch failed|ECONN/i.test(msg);
-      if (!transient || attempt === attempts - 1) throw e;
-      // Exponential backoff: 0.8s, 1.6s …
-      await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
+      const retryable =
+        isQuotaError(e) ||
+        /\b503\b|overloaded|unavailable|temporarily|timeout|network|fetch failed|ECONN/i.test(msg);
+      if (!retryable || attempt === attempts - 1) throw e;
+      await new Promise((r) => setTimeout(r, [1000, 3000, 6000][attempt] ?? 6000));
     }
   }
   throw lastErr;
