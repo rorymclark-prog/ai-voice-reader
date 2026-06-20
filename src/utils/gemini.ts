@@ -27,15 +27,38 @@ export interface VoiceOption {
   description: string;
 }
 
-/** A curated subset of Gemini's prebuilt voices, with human-friendly descriptions. */
+/** All 30 of Gemini's prebuilt TTS voices, with their official characteristics. */
 export const VOICE_OPTIONS: VoiceOption[] = [
-  { id: 'Kore', label: 'Kore', description: 'Warm & firm — great for documents' },
-  { id: 'Puck', label: 'Puck', description: 'Upbeat and friendly' },
-  { id: 'Charon', label: 'Charon', description: 'Deep and informative' },
-  { id: 'Aoede', label: 'Aoede', description: 'Breezy and light' },
-  { id: 'Fenrir', label: 'Fenrir', description: 'Energetic, excitable' },
-  { id: 'Leda', label: 'Leda', description: 'Youthful and clear' },
-  { id: 'Zephyr', label: 'Zephyr', description: 'Bright and crisp' },
+  { id: 'Kore', label: 'Kore', description: 'Firm — great for documents' },
+  { id: 'Puck', label: 'Puck', description: 'Upbeat' },
+  { id: 'Charon', label: 'Charon', description: 'Informative' },
+  { id: 'Aoede', label: 'Aoede', description: 'Breezy' },
+  { id: 'Fenrir', label: 'Fenrir', description: 'Excitable' },
+  { id: 'Leda', label: 'Leda', description: 'Youthful' },
+  { id: 'Zephyr', label: 'Zephyr', description: 'Bright' },
+  { id: 'Orus', label: 'Orus', description: 'Firm' },
+  { id: 'Callirrhoe', label: 'Callirrhoe', description: 'Easy-going' },
+  { id: 'Autonoe', label: 'Autonoe', description: 'Bright' },
+  { id: 'Enceladus', label: 'Enceladus', description: 'Breathy' },
+  { id: 'Iapetus', label: 'Iapetus', description: 'Clear' },
+  { id: 'Umbriel', label: 'Umbriel', description: 'Easy-going' },
+  { id: 'Algieba', label: 'Algieba', description: 'Smooth' },
+  { id: 'Despina', label: 'Despina', description: 'Smooth' },
+  { id: 'Erinome', label: 'Erinome', description: 'Clear' },
+  { id: 'Algenib', label: 'Algenib', description: 'Gravelly' },
+  { id: 'Rasalgethi', label: 'Rasalgethi', description: 'Informative' },
+  { id: 'Laomedeia', label: 'Laomedeia', description: 'Upbeat' },
+  { id: 'Achernar', label: 'Achernar', description: 'Soft' },
+  { id: 'Alnilam', label: 'Alnilam', description: 'Firm' },
+  { id: 'Schedar', label: 'Schedar', description: 'Even' },
+  { id: 'Gacrux', label: 'Gacrux', description: 'Mature' },
+  { id: 'Pulcherrima', label: 'Pulcherrima', description: 'Forward' },
+  { id: 'Achird', label: 'Achird', description: 'Friendly' },
+  { id: 'Zubenelgenubi', label: 'Zubenelgenubi', description: 'Casual' },
+  { id: 'Vindemiatrix', label: 'Vindemiatrix', description: 'Gentle' },
+  { id: 'Sadachbia', label: 'Sadachbia', description: 'Lively' },
+  { id: 'Sadaltager', label: 'Sadaltager', description: 'Knowledgeable' },
+  { id: 'Sulafat', label: 'Sulafat', description: 'Warm' },
 ];
 
 export const DEFAULT_VOICE = 'Kore';
