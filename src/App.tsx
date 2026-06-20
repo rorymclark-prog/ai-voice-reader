@@ -4,8 +4,12 @@ import QuickListen from './components/QuickListen'
 
 const shortcutLabel =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)
-    ? 'Option+L'
+    ? 'Command+Shift+L'
     : 'Alt+L'
+const fallbackShortcutLabel =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)
+    ? 'Option+L'
+    : ''
 
 function App() {
   return (
@@ -36,6 +40,12 @@ function App() {
                 <Keyboard className="h-3.5 w-3.5" />
                 {shortcutLabel}
               </span>
+              {fallbackShortcutLabel && (
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1.5">
+                  <Keyboard className="h-3.5 w-3.5" />
+                  {fallbackShortcutLabel}
+                </span>
+              )}
             </div>
           </header>
 

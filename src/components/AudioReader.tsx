@@ -252,7 +252,9 @@ export default function AudioReader({
         {/* Shortcut hint */}
         <div className="hidden sm:flex items-center gap-1.5 text-[10px] text-gray-400 bg-gray-50 border border-gray-150 rounded-xl px-3 py-2 shrink-0">
           <span>Select any text then press</span>
-          <kbd className="px-1.5 py-0.5 bg-white border border-gray-200 rounded text-[10px] font-mono font-bold text-gray-700 shadow-xs">Alt+L</kbd>
+          <kbd className="px-1.5 py-0.5 bg-white border border-gray-200 rounded text-[10px] font-mono font-bold text-gray-700 shadow-xs">⌘⇧L</kbd>
+          <span>or</span>
+          <kbd className="px-1.5 py-0.5 bg-white border border-gray-200 rounded text-[10px] font-mono font-bold text-gray-700 shadow-xs">⌥L</kbd>
           <span>to listen instantly</span>
         </div>
       </div>
@@ -310,7 +312,7 @@ export default function AudioReader({
           <textarea
             value={pastedText}
             onChange={(e) => setPastedText(e.target.value)}
-            placeholder="Paste the text you'd like read aloud — or select text anywhere on the page and press Alt+L…"
+            placeholder="Paste the text you'd like read aloud — or select text anywhere on the page and press Command+Shift+L…"
             rows={6}
             className="w-full p-4 border border-gray-200 rounded-2xl text-sm text-gray-800 bg-gray-50/40 focus:bg-white focus:outline-none focus:ring-1 focus:ring-gray-900 focus:border-gray-900 resize-y"
           />

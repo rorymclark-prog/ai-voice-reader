@@ -162,7 +162,19 @@ export async function synthesizeSpeech(
 
   const response = await ai.models.generateContent({
     model: TTS_MODEL,
-    contents: [{ role: 'user', parts: [{ text }] }],
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text:
+              'Read the following transcript aloud in a natural voice. ' +
+              'Return audio only, with no written response.\n\nTranscript:\n' +
+              text,
+          },
+        ],
+      },
+    ],
     config: {
       responseModalities: ['AUDIO'],
       speechConfig: {

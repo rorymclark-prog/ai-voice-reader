@@ -13,15 +13,36 @@ const VOICE_STORAGE_KEY = 'ai_reader_voice';
 const PLAIN_TEXT_EXT = /\.(txt|md|markdown|csv|json|log)$/i;
 type Status = 'idle' | 'working' | 'ready' | 'error';
 
-// Show the right modifier per platform (Option ⌥ on Mac, Alt elsewhere).
+// Plain Command+L is reserved by browsers for the address bar, so Mac gets a
+// nearby app-safe shortcut while Option+L stays supported.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
-const SHORTCUT_LABEL = IS_MAC ? '⌥L' : 'Alt+L';
+const SHORTCUT_LABEL = IS_MAC ? '⌘⇧L' : 'Alt+L';
+const FALLBACK_SHORTCUT_LABEL = IS_MAC ? '⌥L' : '';
 
 interface Bubble { x: number; y: number; text: string; }
 
+type AudioContextConstructor = typeof AudioContext;
+
+function getSelectedText(): string {
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLTextAreaElement ||
+    (active instanceof HTMLInputElement && typeof active.value === 'string')
+  ) {
+    const start = active.selectionStart ?? 0;
+    const end = active.selectionEnd ?? 0;
+    return start === end ? '' : active.value.slice(start, end).trim();
+  }
+  return window.getSelection()?.toString().trim() || '';
+}
+
+function getAudioContextConstructor(): AudioContextConstructor | undefined {
+  return window.AudioContext || (window as Window & { webkitAudioContext?: AudioContextConstructor }).webkitAudioContext;
+}
+
 /**
  * Global "Quick Listen" experience:
- *  - Press Alt+L anywhere with selected text, and reading starts automatically.
+ *  - Press the shortcut anywhere with selected text, and reading starts automatically.
  *  - A floating bubble also appears when you select a chunk of text.
  *  - Inside the popup: edit/confirm text or choose a file, pick a voice, listen instantly.
  */
@@ -40,11 +61,122 @@ export default function QuickListen() {
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [instantSpeechText, setInstantSpeechText] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const shouldAutoPlayRef = useRef(false);
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const configured = isGeminiConfigured();
+
+  const unlockAudioPlayback = () => {
+    const AudioContextClass = getAudioContextConstructor();
+    if (!AudioContextClass) return;
+    if (!audioContextRef.current) audioContextRef.current = new AudioContextClass();
+    void audioContextRef.current.resume();
+  };
+
+  const stopFallbackPlayback = () => {
+    if (!activeSourceRef.current) return;
+    activeSourceRef.current.onended = null;
+    activeSourceRef.current.stop();
+    activeSourceRef.current = null;
+    setIsPlaying(false);
+  };
+
+  const stopInstantSpeech = () => {
+    if (!speechUtteranceRef.current) return;
+    speechUtteranceRef.current.onend = null;
+    speechUtteranceRef.current.onerror = null;
+    window.speechSynthesis.cancel();
+    speechUtteranceRef.current = null;
+    setIsPlaying(false);
+  };
+
+  const speakInstantly = (source: string) => {
+    const clean = source.trim();
+    if (!clean) return;
+    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+      void run(async () => clean, true);
+      return;
+    }
+
+    stopInstantSpeech();
+    stopFallbackPlayback();
+    audioRef.current?.pause();
+    setError('');
+    setAudioUrl(null);
+    setInstantSpeechText(clean);
+    setStatus('ready');
+    setProgress('');
+
+    const utterance = new SpeechSynthesisUtterance(clean);
+    let didStart = false;
+    let didFallback = false;
+    const fallbackToGemini = () => {
+      if (didFallback) return;
+      didFallback = true;
+      speechUtteranceRef.current = null;
+      setIsPlaying(false);
+      void run(async () => clean, true);
+    };
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onstart = () => {
+      didStart = true;
+      setIsPlaying(true);
+    };
+    utterance.onend = () => {
+      if (speechUtteranceRef.current === utterance) {
+        speechUtteranceRef.current = null;
+        setIsPlaying(false);
+        if (!didStart) fallbackToGemini();
+      }
+    };
+    utterance.onerror = () => {
+      if (speechUtteranceRef.current === utterance) {
+        fallbackToGemini();
+      }
+    };
+    speechUtteranceRef.current = utterance;
+    setIsPlaying(true);
+    window.speechSynthesis.speak(utterance);
+    window.setTimeout(() => {
+      if (
+        speechUtteranceRef.current === utterance &&
+        !window.speechSynthesis.speaking &&
+        !window.speechSynthesis.pending
+      ) {
+        fallbackToGemini();
+      }
+    }, 500);
+  };
+
+  const playWithUnlockedAudio = async (url: string) => {
+    const AudioContextClass = getAudioContextConstructor();
+    if (!AudioContextClass) throw new Error('Audio playback is not supported in this browser.');
+    const ctx = audioContextRef.current || new AudioContextClass();
+    audioContextRef.current = ctx;
+    await ctx.resume();
+    const bytes = await fetch(url).then((response) => response.arrayBuffer());
+    const buffer = await ctx.decodeAudioData(bytes.slice(0));
+    stopFallbackPlayback();
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.onended = () => {
+      if (activeSourceRef.current === source) {
+        activeSourceRef.current = null;
+        setIsPlaying(false);
+      }
+    };
+    activeSourceRef.current = source;
+    setIsPlaying(true);
+    source.start();
+  };
 
   // --- open helpers ---
   const openWith = (initialText: string, autoStart = false) => {
@@ -52,11 +184,13 @@ export default function QuickListen() {
     setError('');
     setStatus('idle');
     setAudioUrl(null);
+    setInstantSpeechText('');
+    stopInstantSpeech();
     setFileName('');
     setText(initialText);
     setOpen(true);
     if (autoStart && initialText.trim()) {
-      void run(async () => initialText);
+      speakInstantly(initialText);
     }
   };
 
@@ -68,11 +202,17 @@ export default function QuickListen() {
   // --- global listeners: shortcut + selection bubble ---
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Match the physical "L" key via e.code so macOS Option+L (which can
-      // remap e.key to a different character) still triggers reliably.
-      if (e.altKey && (e.code === 'KeyL' || e.key.toLowerCase() === 'l')) {
+      // Match the physical "L" key so Option+L still triggers reliably even
+      // when the keyboard layout remaps e.key.
+      const isL = e.code === 'KeyL' || e.key.toLowerCase() === 'l';
+      const isShortcut = isL && (
+        e.altKey ||
+        (IS_MAC && e.metaKey && e.shiftKey) ||
+        (!IS_MAC && e.ctrlKey && e.shiftKey)
+      );
+      if (isShortcut) {
         e.preventDefault();
-        const sel = window.getSelection()?.toString().trim() || '';
+        const sel = getSelectedText();
         openWith(sel, Boolean(sel));
       }
       if (e.key === 'Escape') setOpen(false);
@@ -83,7 +223,7 @@ export default function QuickListen() {
       if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
       setTimeout(() => {
         const sel = window.getSelection();
-        const t = sel?.toString().trim() || '';
+        const t = getSelectedText();
         if (!t || t.length < 10) { setBubble(null); return; }
         try {
           const rect = sel!.getRangeAt(0).getBoundingClientRect();
@@ -109,9 +249,40 @@ export default function QuickListen() {
     return () => { if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current); };
   }, [audioUrl]);
 
+  useEffect(() => {
+    return () => {
+      stopInstantSpeech();
+      stopFallbackPlayback();
+      void audioContextRef.current?.close();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-play when audio becomes ready.
   useEffect(() => {
-    if (audioUrl) audioRef.current?.play().catch(() => {});
+    if (!audioUrl) return;
+    const shouldAutoPlay = shouldAutoPlayRef.current;
+    shouldAutoPlayRef.current = false;
+
+    const playWhenMounted = async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const el = audioRef.current;
+      if (!el) {
+        if (shouldAutoPlay) await playWithUnlockedAudio(audioUrl);
+        return;
+      }
+
+      try {
+        await el.play();
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 150));
+        if (shouldAutoPlay && el.paused) await playWithUnlockedAudio(audioUrl);
+      } catch {
+        if (shouldAutoPlay) await playWithUnlockedAudio(audioUrl);
+      }
+    };
+
+    void playWhenMounted().catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl]);
 
   const setVoiceAndSave = (v: string) => {
@@ -120,7 +291,7 @@ export default function QuickListen() {
   };
 
   // --- generation ---
-  async function run(getText: () => Promise<string>) {
+  async function run(getText: () => Promise<string>, autoPlayWhenReady = false) {
     if (!configured) {
       setError('Gemini API key is not configured.');
       setStatus('error');
@@ -129,6 +300,9 @@ export default function QuickListen() {
     try {
       setError('');
       setAudioUrl(null);
+      setInstantSpeechText('');
+      stopInstantSpeech();
+      shouldAutoPlayRef.current = autoPlayWhenReady;
       setStatus('working');
       setProgress('Preparing…');
       const source = (await getText()).trim();
@@ -151,10 +325,14 @@ export default function QuickListen() {
     }
   }
 
-  const handleListen = () => run(async () => text);
+  const handleListen = () => {
+    unlockAudioPlayback();
+    void run(async () => text, true);
+  };
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
+    unlockAudioPlayback();
     setFileName(file.name);
     await run(async () => {
       if (file.type.startsWith('text/') || PLAIN_TEXT_EXT.test(file.name)) {
@@ -163,10 +341,22 @@ export default function QuickListen() {
       setProgress('Reading your file with Gemini…');
       const base64 = await fileToBase64(file);
       return extractReadableText(base64, file.type || 'application/pdf');
-    });
+    }, true);
   };
 
   const togglePlay = () => {
+    if (instantSpeechText && !audioUrl) {
+      if (window.speechSynthesis.speaking) {
+        stopInstantSpeech();
+      } else {
+        speakInstantly(instantSpeechText);
+      }
+      return;
+    }
+    if (activeSourceRef.current) {
+      stopFallbackPlayback();
+      return;
+    }
     const el = audioRef.current;
     if (!el) return;
     el.paused ? el.play() : el.pause();
@@ -243,7 +433,7 @@ export default function QuickListen() {
                   <textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    placeholder={`Highlight text on the page and press ${SHORTCUT_LABEL} — or type/paste here, or choose a file below.`}
+                    placeholder={`Highlight text and press ${SHORTCUT_LABEL}${FALLBACK_SHORTCUT_LABEL ? ` or ${FALLBACK_SHORTCUT_LABEL}` : ''} — or type/paste here, or choose a file below.`}
                     rows={4}
                     className="mt-1.5 w-full p-3 border border-gray-200 rounded-xl text-sm text-gray-800 bg-gray-50/40 focus:bg-white focus:outline-none focus:ring-1 focus:ring-gray-900 focus:border-gray-900 resize-y"
                   />
@@ -300,15 +490,17 @@ export default function QuickListen() {
                 )}
 
                 {/* Player */}
-                {status === 'ready' && audioUrl && (
+                {status === 'ready' && (audioUrl || instantSpeechText) && (
                   <div className="rounded-xl border border-gray-150 bg-gray-50/60 p-3 flex items-center gap-3">
-                    <audio
-                      ref={audioRef}
-                      src={audioUrl}
-                      onPlay={() => setIsPlaying(true)}
-                      onPause={() => setIsPlaying(false)}
-                      onEnded={() => setIsPlaying(false)}
-                    />
+                    {audioUrl && (
+                      <audio
+                        ref={audioRef}
+                        src={audioUrl}
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => setIsPlaying(false)}
+                        onEnded={() => setIsPlaying(false)}
+                      />
+                    )}
                     <button
                       type="button"
                       onClick={togglePlay}
@@ -317,16 +509,18 @@ export default function QuickListen() {
                       {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                     </button>
                     <p className="flex-1 text-xs text-gray-600 font-medium">
-                      {isPlaying ? 'Playing in natural voice…' : 'Ready — press play to listen.'}
+                      {isPlaying ? 'Playing selected text…' : 'Ready — press play to listen.'}
                     </p>
-                    <button
-                      type="button"
-                      onClick={handleDownload}
-                      title="Download WAV"
-                      className="p-2 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 cursor-pointer"
-                    >
-                      <Download className="w-4 h-4" />
-                    </button>
+                    {audioUrl && (
+                      <button
+                        type="button"
+                        onClick={handleDownload}
+                        title="Download WAV"
+                        className="p-2 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 cursor-pointer"
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -335,6 +529,12 @@ export default function QuickListen() {
                 <FileText className="w-3 h-3" />
                 Tip: select any text on the page, then press
                 <kbd className="px-1 py-0.5 bg-white border border-gray-200 rounded font-mono font-bold text-gray-600">{SHORTCUT_LABEL}</kbd>
+                {FALLBACK_SHORTCUT_LABEL && (
+                  <>
+                    <span>or</span>
+                    <kbd className="px-1 py-0.5 bg-white border border-gray-200 rounded font-mono font-bold text-gray-600">{FALLBACK_SHORTCUT_LABEL}</kbd>
+                  </>
+                )}
               </div>
             </motion.div>
           </div>
