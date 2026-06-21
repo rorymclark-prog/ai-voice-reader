@@ -1,0 +1,33 @@
+name: Deploy
+
+# Push to the default branch → deploy to Vercel (production). Add a repo secret
+# VERCEL_TOKEN (https://vercel.com/account/tokens) to enable it; until then it skips.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check token
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::Add a VERCEL_TOKEN repo secret to enable auto-deploy."
+            echo "HAS=false" >> "$GITHUB_ENV"
+          else
+            echo "HAS=true" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-node@v4
+        if: env.HAS == 'true'
+        with:
+          node-version: '20'
+      - name: Deploy to Vercel
+        if: env.HAS == 'true'
+        run: npx vercel@latest deploy --prod --yes --token="$VERCEL_TOKEN"
