@@ -243,7 +243,7 @@ async function synthesizeWithRetry(
       const msg = String((e as { message?: string })?.message || e);
       const retryable =
         isQuotaError(e) ||
-        /\b503\b|overloaded|unavailable|temporarily|timeout|network|fetch failed|ECONN/i.test(msg);
+        /\b500\b|\b503\b|INTERNAL|overloaded|unavailable|temporarily|timeout|network|fetch failed|ECONN/i.test(msg);
       if (!retryable || attempt === attempts - 1) throw e;
       await new Promise((r) => setTimeout(r, [1000, 3000, 6000][attempt] ?? 6000));
     }

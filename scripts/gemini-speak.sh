@@ -14,11 +14,15 @@ set -euo pipefail
 
 notify() { osascript -e "display notification \"$1\" with title \"Speak with Gemini\"" >/dev/null 2>&1 || true; }
 
-# --- gather the text (stdin first, then args) ---
+# --- gather the text (stdin → args → clipboard) ---
+# Some apps (notably Adobe Acrobat) don't hand the selection to macOS Services,
+# so as a last resort we read the clipboard — meaning "select, Cmd+C, hotkey"
+# always works, even where the Services selection is empty.
 TEXT="$(cat 2>/dev/null || true)"
 if [ -z "${TEXT//[[:space:]]/}" ]; then TEXT="$*"; fi
+if [ -z "${TEXT//[[:space:]]/}" ]; then TEXT="$(pbpaste 2>/dev/null || true)"; fi
 TEXT="$(printf '%s' "$TEXT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-if [ -z "$TEXT" ]; then notify "No text selected."; exit 0; fi
+if [ -z "$TEXT" ]; then notify "No text found. Select text (or copy it with Cmd+C) first."; exit 0; fi
 
 # --- config ---
 ENV_FILE="/Users/roryclark/Documents/Mac and Cloud Health/ai-voice-reader/.env.local"
@@ -50,9 +54,19 @@ open(os.environ["REQ_FILE"], "w").write(json.dumps(body))
 ' || { notify "Failed to build request"; exit 1; }
 
 RESP_FILE="$(mktemp -t gspeak_resp).json"
-HTTP="$(curl -s -o "$RESP_FILE" -w '%{http_code}' \
-  "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}" \
-  -H 'Content-Type: application/json' -X POST --data-binary "@${REQ_FILE}")"
+URL="https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}"
+HTTP=""
+for attempt in 1 2 3 4; do
+  HTTP="$(curl -s -o "$RESP_FILE" -w '%{http_code}' "$URL" \
+    -H 'Content-Type: application/json' -X POST --data-binary "@${REQ_FILE}")"
+  case "$HTTP" in
+    200) break ;;
+    # Transient: server error / overloaded / rate limit — wait and retry.
+    429|500|503) [ "$attempt" -lt 4 ] && sleep "$((attempt * 2))" && continue || break ;;
+    # Anything else (e.g. 400 bad request) won't fix itself — stop.
+    *) break ;;
+  esac
+done
 
 if [ "$HTTP" != "200" ]; then
   MSG="$(RESP_FILE="$RESP_FILE" python3 -c 'import os,json;d=json.load(open(os.environ["RESP_FILE"]));print(d.get("error",{}).get("message","")[:140])' 2>/dev/null || true)"
