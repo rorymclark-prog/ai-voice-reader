@@ -34,8 +34,17 @@ VOICE="Kore"
 [ -z "$VOICE" ] && VOICE="Kore"
 MODEL="gemini-2.5-flash-preview-tts"
 
-# Stop any audio already playing (press the hotkey again to interrupt).
+# Stop any previous run before starting — an earlier press might still be
+# synthesizing (mid-API-call) or playing. Without this, two voices overlap.
+PIDFILE="/tmp/gemini-speak.pid"
+if [ -f "$PIDFILE" ]; then
+  OLDPID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$OLDPID" ] && [ "$OLDPID" != "$$" ] && kill -0 "$OLDPID" 2>/dev/null; then
+    kill "$OLDPID" 2>/dev/null || true
+  fi
+fi
 pkill -x afplay >/dev/null 2>&1 || true
+echo "$$" > "$PIDFILE"
 
 # --- build the request body safely (handles quotes/newlines) ---
 REQ_FILE="$(mktemp -t gspeak_req).json"

@@ -1,6 +1,14 @@
+import { useState } from 'react'
 import { Headphones, Keyboard, Mic2, UploadCloud } from 'lucide-react'
 import AudioReader from './components/AudioReader'
 import QuickListen from './components/QuickListen'
+
+// When opened from the "open in app window" hotkey, the selection arrives as
+// ?text=… (and optional ?voice=…). Read it once, before the reader mounts.
+const launchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+const launchVoice = launchParams?.get('voice') || ''
+if (launchVoice) localStorage.setItem('ai_reader_voice', launchVoice)
+const launchText = launchParams?.get('text') || ''
 
 const shortcutLabel =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)
@@ -12,6 +20,16 @@ const fallbackShortcutLabel =
     : ''
 
 function App() {
+  const [initialText, setInitialText] = useState<string | undefined>(launchText || undefined)
+
+  const consumeInitialText = () => {
+    setInitialText(undefined)
+    // Drop the ?text= from the URL so a refresh doesn't replay it.
+    if (typeof window !== 'undefined' && window.location.search) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }
+
   return (
     <>
       <QuickListen />
@@ -50,7 +68,7 @@ function App() {
           </header>
 
           <section className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
-            <AudioReader />
+            <AudioReader initialText={initialText} onConsumedInitialText={consumeInitialText} />
             <aside className="rounded-2xl border border-slate-200 bg-white/72 p-4 shadow-xs backdrop-blur">
               <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Scratch Text</p>
               <p className="mt-3 text-sm leading-6 text-slate-700">
