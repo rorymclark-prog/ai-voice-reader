@@ -31,6 +31,8 @@ if [ -z "$KEY" ]; then notify "Gemini API key not found in .env.local"; exit 1; 
 VOICE_FILE="$HOME/.gemini-speak-voice"
 VOICE="Kore"
 [ -f "$VOICE_FILE" ] && VOICE="$(tr -d '[:space:]' < "$VOICE_FILE")"
+# A one-off voice from the popup picker takes priority over the saved default.
+[ -n "${GSPEAK_VOICE:-}" ] && VOICE="$GSPEAK_VOICE"
 [ -z "$VOICE" ] && VOICE="Kore"
 MODEL="gemini-2.5-flash-preview-tts"
 
