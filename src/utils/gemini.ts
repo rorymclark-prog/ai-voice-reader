@@ -9,13 +9,6 @@
  * bare PCM, so we wrap it in a minimal WAV container before handing back a blob URL.
  */
 
-import { GoogleGenAI } from '@google/genai';
-
-const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-
-const TEXT_MODEL = 'gemini-2.5-flash';
-const TTS_MODEL = 'gemini-2.5-flash-preview-tts';
-
 // Gemini TTS output format (documented): mono, signed 16-bit little-endian PCM @ 24 kHz.
 const TTS_SAMPLE_RATE = 24000;
 const TTS_CHANNELS = 1;
@@ -63,22 +56,17 @@ export const VOICE_OPTIONS: VoiceOption[] = [
 
 export const DEFAULT_VOICE = 'Kore';
 
-let client: GoogleGenAI | null = null;
-
-function getClient(): GoogleGenAI {
-  if (!API_KEY) {
-    throw new Error(
-      'Gemini API key is not configured. Set GEMINI_API_KEY so the AI voice reader can run.'
-    );
+async function requestReader(body: Record<string, unknown>): Promise<Response> {
+  const response = await fetch('/api/reader', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || response.headers.get('content-type')?.includes('text/html')) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || 'Cloud reading is unavailable. Try the device voice for text.');
   }
-  if (!client) {
-    client = new GoogleGenAI({ apiKey: API_KEY });
-  }
-  return client;
-}
-
-export function isGeminiConfigured(): boolean {
-  return Boolean(API_KEY);
+  return response;
 }
 
 /** Strip a data URL prefix (e.g. "data:application/pdf;base64,") down to raw base64. */
@@ -108,33 +96,10 @@ export async function extractReadableText(
   base64Data: string,
   mimeType: string
 ): Promise<string> {
-  const ai = getClient();
-
-  const response = await ai.models.generateContent({
-    model: TEXT_MODEL,
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType, data: toRawBase64(base64Data) } },
-          {
-            text:
-              'Extract the readable content of this document as clean prose meant to be ' +
-              'listened to as audio. Preserve the natural reading order and meaning. ' +
-              'Expand obvious abbreviations, read numbers and dates naturally, and skip ' +
-              'page numbers, repeated headers/footers, and layout artifacts. Do not add ' +
-              'commentary, summaries, or headings of your own — return only the spoken text.',
-          },
-        ],
-      },
-    ],
-  });
-
-  const text = response.text?.trim();
-  if (!text) {
-    throw new Error('Could not extract any readable text from this file.');
-  }
-  return text;
+  const data = toRawBase64(base64Data);
+  if (data.length > 4194304) throw new Error('Choose a document up to 3 MiB.');
+  const response = await requestReader({operation: 'extract', data, mimeType});
+  return (await response.json()).text;
 }
 
 /** Wrap raw PCM bytes in a 44-byte WAV header so browsers can play it. */
@@ -166,13 +131,6 @@ function pcmToWav(pcm: Uint8Array): Blob {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
 /**
  * Synthesize a chunk of text into a playable WAV Blob using a natural Gemini voice.
  * Keep chunks reasonably sized (a few thousand characters) for snappy playback.
@@ -181,40 +139,8 @@ export async function synthesizeSpeech(
   text: string,
   voice: string = DEFAULT_VOICE
 ): Promise<Blob> {
-  const ai = getClient();
-
-  const response = await ai.models.generateContent({
-    model: TTS_MODEL,
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            text:
-              'Read the following transcript aloud in a natural voice. ' +
-              'Return audio only, with no written response.\n\nTranscript:\n' +
-              text,
-          },
-        ],
-      },
-    ],
-    config: {
-      responseModalities: ['AUDIO'],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: voice },
-        },
-      },
-    },
-  });
-
-  const audioBase64 =
-    response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!audioBase64) {
-    throw new Error('The voice model did not return any audio. Please try again.');
-  }
-
-  return pcmToWav(base64ToBytes(audioBase64));
+  const response = await requestReader({operation: 'speech', text, voice});
+  return pcmToWav(new Uint8Array(await response.arrayBuffer()));
 }
 
 /** True for "you're out of quota / rate limited" responses from Gemini. */

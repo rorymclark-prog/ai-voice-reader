@@ -4,8 +4,9 @@ import {
   AlertTriangle, Volume2, Sparkles, RotateCcw, FileText, Gauge, Zap, Info,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { pickDeviceVoice } from '../utils/deviceVoice';
 import {
-  VOICE_OPTIONS, DEFAULT_VOICE, isGeminiConfigured, fileToBase64,
+  VOICE_OPTIONS, DEFAULT_VOICE, fileToBase64,
   extractReadableText, synthesizeSpeechBatch, mergeWavBlobs, chunkText, isQuotaError,
 } from '../utils/gemini';
 
@@ -70,7 +71,6 @@ export default function AudioReader({
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioUrlRef = useRef<string | null>(null);
-  const configured = isGeminiConfigured();
 
   // Persist chosen voice.
   const setVoiceAndSave = (v: string) => {
@@ -79,16 +79,6 @@ export default function AudioReader({
   };
 
   // --- Device voice (browser SpeechSynthesis): optional fallback only ---
-  const pickDeviceVoice = (): SpeechSynthesisVoice | null => {
-    if (!DEVICE_TTS_AVAILABLE) return null;
-    const voices = window.speechSynthesis.getVoices();
-    const en = voices.filter((v) => /^en[-_]/i.test(v.lang));
-    return (
-      en.find((v) => /natural|enhanced|premium|samantha|siri/i.test(v.name)) ||
-      en[0] || voices[0] || null
-    );
-  };
-
   const stopDevice = () => {
     if (DEVICE_TTS_AVAILABLE) window.speechSynthesis.cancel();
     setIsPlaying(false);
@@ -102,7 +92,13 @@ export default function AudioReader({
     }
     window.speechSynthesis.cancel();
     deviceTextRef.current = text;
-    const voiceObj = pickDeviceVoice();
+    const voiceObj = pickDeviceVoice(window.speechSynthesis.getVoices());
+    if (!voiceObj) {
+      setIsPlaying(false);
+      setError('No suitable device voice is ready. Try again or use the neural voice.');
+      setStatus('error');
+      return;
+    }
     // Speak in small sentence groups so very long text doesn't trip the
     // browser's ~15s single-utterance cutoff.
     const parts = text.match(/[^.!?\n]+[.!?]*\s*|\n+/g) || [text];
@@ -117,7 +113,7 @@ export default function AudioReader({
     const last = groups.length - 1;
     groups.forEach((g, i) => {
       const u = new SpeechSynthesisUtterance(g.trim());
-      if (voiceObj) u.voice = voiceObj;
+      u.voice = voiceObj;
       u.rate = rateArg;
       if (i === 0) u.onstart = () => setIsPlaying(true);
       if (i === last) u.onend = () => setIsPlaying(false);
@@ -209,11 +205,6 @@ export default function AudioReader({
     | { kind: 'doc'; base64: string; mimeType: string };
 
   async function generateFromSource(source: Source, name: string) {
-    if (!configured) {
-      setError('Gemini API key is not configured — add GEMINI_API_KEY to .env.local and reload.');
-      setStatus('error');
-      return;
-    }
     let resolvedText = '';
     try {
       setError('');
@@ -365,15 +356,7 @@ export default function AudioReader({
       </div>
 
       <div className="p-5 sm:p-6 space-y-6">
-        {!configured && (
-          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200/60 flex items-start gap-3">
-            <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-            <p className="text-xs text-amber-800 leading-relaxed">
-              <code className="font-mono">GEMINI_API_KEY</code> isn&apos;t set. Add it to{' '}
-              <code className="font-mono">.env.local</code> (or the AI Studio secrets panel) and reload.
-            </p>
-          </div>
-        )}
+
 
         {/* Input mode toggle */}
         <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl w-fit">
@@ -455,7 +438,7 @@ export default function AudioReader({
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={busy || !configured}
+          disabled={busy}
           className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer"
         >
           {busy ? (

@@ -4,8 +4,9 @@ import {
   AlertTriangle, Download, FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { pickDeviceVoice } from '../utils/deviceVoice';
 import {
-  VOICE_OPTIONS, DEFAULT_VOICE, isGeminiConfigured, fileToBase64,
+  VOICE_OPTIONS, DEFAULT_VOICE, fileToBase64,
   extractReadableText, synthesizeSpeech, mergeWavBlobs, chunkText,
 } from '../utils/gemini';
 
@@ -71,7 +72,6 @@ export default function QuickListen() {
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const shouldAutoPlayRef = useRef(false);
   const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const configured = isGeminiConfigured();
 
   const unlockAudioPlayback = () => {
     const AudioContextClass = getAudioContextConstructor();
@@ -108,6 +108,13 @@ export default function QuickListen() {
     stopInstantSpeech();
     stopFallbackPlayback();
     audioRef.current?.pause();
+    const deviceVoice = pickDeviceVoice(window.speechSynthesis.getVoices());
+    if (!deviceVoice) {
+      setIsPlaying(false);
+      setError('No suitable device voice is ready. Try again or choose the neural voice.');
+      setStatus('error');
+      return;
+    }
     setError('');
     setAudioUrl(null);
     setInstantSpeechText(clean);
@@ -115,6 +122,7 @@ export default function QuickListen() {
     setProgress('');
 
     const utterance = new SpeechSynthesisUtterance(clean);
+    utterance.voice = deviceVoice;
     let didStart = false;
     let didFallback = false;
     const fallbackToGemini = () => {
@@ -306,11 +314,6 @@ export default function QuickListen() {
 
   // --- generation ---
   async function run(getText: () => Promise<string>, autoPlayWhenReady = false) {
-    if (!configured) {
-      setError('Gemini API key is not configured.');
-      setStatus('error');
-      return;
-    }
     try {
       setError('');
       setAudioUrl(null);
@@ -461,12 +464,7 @@ export default function QuickListen() {
               </div>
 
               <div className="p-5 space-y-4 overflow-y-auto">
-                {!configured && (
-                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200/60 flex items-start gap-2.5">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                    <p className="text-xs text-amber-800">GEMINI_API_KEY isn&apos;t set, so audio can&apos;t be generated yet.</p>
-                  </div>
-                )}
+
 
                 {/* Text to read */}
                 <div>
@@ -516,7 +514,7 @@ export default function QuickListen() {
                 <button
                   type="button"
                   onClick={handleListen}
-                  disabled={busy || !configured}
+                  disabled={busy}
                   className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
                 >
                   {busy ? <><Loader2 className="w-4 h-4 animate-spin" />{progress || 'Working…'}</>

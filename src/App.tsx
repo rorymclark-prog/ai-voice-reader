@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Headphones, Keyboard, Mic2, UploadCloud } from 'lucide-react'
+import ReaderAccess from './components/ReaderAccess'
 import AudioReader from './components/AudioReader'
 import QuickListen from './components/QuickListen'
 
@@ -67,6 +68,7 @@ function App() {
             </div>
           </header>
 
+          <ReaderAccess />
           <section className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
             <AudioReader initialText={initialText} onConsumedInitialText={consumeInitialText} />
             <aside className="rounded-2xl border border-slate-200 bg-white/72 p-4 shadow-xs backdrop-blur">
