@@ -68,7 +68,11 @@ export async function handleReader(req, res, key, secret, local) {
     const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
       method: 'POST', headers: {'content-type': 'application/json', 'x-goog-api-key': key}, body: JSON.stringify(request), signal: AbortSignal.timeout(115000)
     });
-    if (!response.ok) return response.status === 429 ? fail(429, 'Gemini reached its quota or rate limit.') : fail(502, 'Gemini could not complete this request.');
+    if (!response.ok) {
+      if (response.status === 402) return fail(402, 'Cloud reading is paused because the Gemini project is out of credits.');
+      if (response.status === 429) return fail(429, 'Gemini reached its quota or rate limit.');
+      return fail(502, 'Gemini could not complete this request.');
+    }
     const result = await response.json();
     const parts = result.candidates?.[0]?.content?.parts || [];
     if (body.operation === 'extract') {

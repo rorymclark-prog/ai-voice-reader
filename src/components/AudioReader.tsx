@@ -394,7 +394,7 @@ export default function AudioReader({
             ) : (
               <p className="text-sm font-semibold text-gray-700">Click to choose a PDF, document, or text file</p>
             )}
-            <p className="text-[11px] text-gray-400 mt-1">PDF, images, .txt, .md, .csv and more</p>
+            <p className="text-[11px] text-gray-400 mt-1">PDFs and images up to 3 MiB, or plain-text files</p>
           </label>
         ) : (
           <textarea

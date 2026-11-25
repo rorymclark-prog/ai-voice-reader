@@ -524,7 +524,13 @@ export default function QuickListen() {
                 {status === 'error' && error && (
                   <div className="p-3 rounded-xl bg-red-50 border border-red-150 flex items-start gap-2.5">
                     <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
-                    <p className="text-xs text-red-700">{error}</p>
+                    <div>
+                      <p className="text-xs text-red-700">{error}</p>
+                      {text.trim() && 'speechSynthesis' in window && <button type="button"
+                        onClick={() => speakInstantly(text)} className="mt-2 text-xs font-semibold underline">
+                        Read with device voice
+                      </button>}
+                    </div>
                   </div>
                 )}
 

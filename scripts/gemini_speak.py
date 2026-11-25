@@ -26,7 +26,7 @@ import re
 KEY = os.environ.get("KEY", "")
 VOICE = os.environ.get("VOICE", "Kore")
 MODEL = os.environ.get("MODEL", "gemini-2.5-flash-preview-tts")
-URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={KEY}"
+URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 MAX_CONCURRENCY = 4
 CHUNK_LIMIT = 100  # chars — ~one sentence per chunk, so the first plays fast
 
@@ -75,7 +75,7 @@ def synth(text):
     for attempt in range(4):
         try:
             req = urllib.request.Request(
-                URL, data=body, headers={"Content-Type": "application/json"})
+                URL, data=body, headers={"Content-Type": "application/json", "x-goog-api-key": KEY})
             with urllib.request.urlopen(req, timeout=120) as r:
                 d = json.load(r)
             b64 = d["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
